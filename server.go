@@ -28,92 +28,85 @@ import (
     "encoding/binary"
 )
 
-const headerlen = 4
-const payloadlen = 4
+const signaturelen  = 4
+const payloadlen    = 4
+const checksumlen   = 16
 
 var port = flag.Int("port", 8080, "Port to which the socket will be bound")
 var ip = flag.String("ip", "", "IP address to which the socket will be bound")
 
-func InitLogger(infoWriter io.Writer, errorWriter io.Writer) (*log.Logger, *log.Logger) {
-    
+func InitLog(infoWriter io.Writer, errorWriter io.Writer) (*log.Logger, *log.Logger) {
+
     var infoLogger *log.Logger;
     var errorLogger *log.Logger;
-
     infoLogger = log.New(infoWriter, "INFO: ", log.Ldate|log.Ltime|log.Lshortfile)
     errorLogger = log.New(errorWriter, "ERROR: ", log.Ldate|log.Ltime|log.Lshortfile)
     return infoLogger, errorLogger
 }
 
-func handleConnection(conn net.Conn) {
+func handleConnection(conn net.Conn, errorLogger *log.Logger) {
 
-    var n int
-    var err error
-    var lengthInt int64
-
-    header := make([]byte, headerlen)
+    header := make([]byte, signaturelen)
     length := make([]byte, payloadlen)
     checksum := make([]byte, 16)
-    
+
     for {
         /* Reads the header and compares it to the signature */
-        header = make([]byte, headerlen)
-        n, err = conn.Read(header)
-        if err != nil || n < headerlen {
+        header = make([]byte, signaturelen)
+        _, err := io.ReadFull(conn, header)
+        if err != nil {
+            errorLogger.Println("Error while reading signature", err)
             conn.Close()
             return
         }
 
-        if(binary.LittleEndian.Uint32(header) == 0xFDFDFDFD) {
-            
-            /* Reads the expected length of the payload */
-            n, err = conn.Read(length)
-            
-            if err != nil || n < payloadlen {
-                conn.Close()
-                fmt.Fprintf(os.Stderr, "Could not read the expected lenght of the payload\n")
-                return
-            }
+        if(binary.LittleEndian.Uint32(header) != 0xFDFDFDFD) {
+            continue
+        }
 
-            n, err = conn.Read(checksum)
-            if err != nil || n < 16 {
-                conn.Close()
-                return
-            }
-
-            /* Reads the payload itself */
-            lengthInt =  int64(binary.LittleEndian.Uint32(length))
-            fmt.Println(lengthInt)
-            payload := make([]byte, lengthInt)
-
-            n, err = conn.Read(payload)
-
-            if (err != nil || n < int(lengthInt)) {
-                conn.Close()
-                fmt.Fprintf(os.Stderr, "Payload len (%d) shorter than expected (%d)\n",
-                                        n, lengthInt)
-                return
-            }
-            
-            calculatedChecksum := md5.Sum(payload)
-            if(bytes.Equal(calculatedChecksum[:], checksum)) {
-                fmt.Fprintf(os.Stderr, "Checksums do not match\n")
-            }  else {
-                fmt.Fprintf(os.Stderr, "Checksum ok from %s\n", conn.RemoteAddr())
-            }
-        } else {
-            fmt.Fprintf(os.Stderr, "Signature sent from the server not reconized\n")
+        /* Reading payload lenght */
+        _, err = io.ReadFull(conn, length)
+        if err != nil {
+            errorLogger.Println("Error while reading payload lenght", err)
             conn.Close()
             return
         }
+
+        /* Reading checksum */
+        _, err = io.ReadFull(conn, checksum)
+        if err != nil {
+            errorLogger.Println("Error while reading the checksum", err)
+            conn.Close()
+            return
+        }
+
+        /* Reading payload */
+        payload := make([]byte, binary.LittleEndian.Uint32(length))
+        _, err = io.ReadFull(conn, payload)
+        if err != nil {
+            if err == io.EOF {
+                /* Connection was closed by remote host */
+                return
+            } else {
+                errorLogger.Println("Error while reading payload", err)
+                conn.Close()
+                return
+            }
+       }
+
+       calculatedChecksum := md5.Sum(payload)
+       if(bytes.Equal(calculatedChecksum[:], checksum)) {
+           errorLogger.Println("Checksums do not match!")
+       }
     }
 }
 
 func main () {
-    
-    infoLogger, errorLogger := InitLogger(os.Stderr, os.Stderr)
+
+    infoLogger, errorLogger := InitLog(os.Stderr, os.Stderr)
     flag.Parse()
     var bind bytes.Buffer
-    
+
     bind.WriteString(fmt.Sprintf("%s:%d", *ip, *port))
     listener, err := net.Listen("tcp", bind.String())
     if(err != nil) {
@@ -129,7 +122,7 @@ func main () {
      * the I/O is relatively easy to write. Underneath, GO uses the async 
      * interfaces provided by the OS (epoll) to be notified for network events
      */
-    
+
     for {
         conn ,err := listener.Accept()
         if err != nil {
@@ -138,6 +131,6 @@ func main () {
         }
 
         infoLogger.Println("Accepted connection with ", conn.RemoteAddr())
-        go handleConnection(conn)
+        go handleConnection(conn, errorLogger)
    }
 }
