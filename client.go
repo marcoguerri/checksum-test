@@ -19,78 +19,76 @@ package main
 import (
         "net"
         "os"
-        "fmt"
         "time"
+        "log"
         "flag"
+        "io"
         "io/ioutil"
         "crypto/md5"
         "encoding/binary"
         )
+
+const timeout = 5
 
 var ip = flag.String("ip", "", "Server IP")
 var port = flag.Int("port", 0, "Server port")
 var payload_path = flag.String("payload", "", "Path of the payload to be sent")
 var runs = flag.Int("runs", 1, "Number of times the payload should be send")
 
-func check(e error) {
-    if e != nil {
-        fmt.Fprintf(os.Stderr, "\n%s", e)
-    }
-    os.Exit(1)
+func InitLog(infoWriter io.Writer, errorWriter io.Writer) (*log.Logger, *log.Logger) {
+    var infoLogger *log.Logger;
+    var errorLogger *log.Logger;
+    infoLogger = log.New(infoWriter, "INFO: ", log.Ldate|log.Ltime|log.Lshortfile)
+    errorLogger = log.New(errorWriter, "ERROR: ", log.Ldate|log.Ltime|log.Lshortfile)
+    return infoLogger, errorLogger
 }
 
-
 func main() {
-
+   
+    infoLogger, errorLogger := InitLog(os.Stderr, os.Stderr)
     flag.Parse()
 
-    if *ip == "" || *port == 0 || *payload_path == "" {
-        fmt.Println("Error while parsing command line arguments. Usage:")
-        flag.PrintDefaults()
+    _, err := os.Stat(*payload_path)
+    if os.IsNotExist(err) {
+        errorLogger.Println("Payload does not exist ")
         os.Exit(1)
     }
 
     ipaddr := net.ParseIP(*ip)
     if ipaddr == nil {
-        fmt.Fprintf(os.Stderr, "IP address is not valid")
+        errorLogger.Println("IP address is not valid")
         os.Exit(1)
     }
 
-    fmt.Printf("Contacting server at %s:%d\n", ipaddr.String(), *port)
+    infoLogger.Println("Connecting server at", ipaddr.String(), ":",  *port)
     tcpaddr := net.TCPAddr{
                 IP:   ipaddr,
                 Port: *port,
     }
 
     var retry int = 3
-    var currRun int = *runs
     var conn net.Conn
-    var err error
-
 
     for {
-        conn, err = net.DialTimeout("tcp", tcpaddr.String(), time.Duration(2 * time.Second))
+        conn, err = net.DialTimeout("tcp", tcpaddr.String(), time.Duration(timeout * time.Second))
         if err != nil {
             retry -= 1
             if retry == 0 {
-                fmt.Fprintf(os.Stderr, "Failed to connect\n")
+                errorLogger.Println("Failed to connect to server")
                 os.Exit(1)
             }
-            fmt.Fprint(os.Stderr, "Connection failed, retrying...\n")
-            time.Sleep(2 * time.Second)
+            infoLogger.Println("Connection attempt failed, retrying in", timeout, "s")
+            time.Sleep(timeout * time.Second)
             continue
         } else {
+            retry = 3
             break
         }
     }
 
-    /* Connection succeeded, reset retry counter */
-    retry = 3
-
-    /* Reading payload, calculating md5sum and sending everything off to the client */
     data, err := ioutil.ReadFile(*payload_path)
     if(err != nil) {
-        fmt.Fprintf(os.Stderr, "Could not read payload file: %s\n", err)
+        errorLogger.Println("Could not read payload file: %s", err)
         conn.Close()
         os.Exit(1)
     }
@@ -99,36 +97,41 @@ func main() {
     signature := []byte{0xFD, 0xFD, 0xFD, 0xFD}
 
     for {
-        if(currRun == 0) {
+        if(*runs == 0) {
             conn.Close()
             break
         }
 
-        /* Sending signature to the server */
         _, err = conn.Write(signature)
         if err != nil {
-            fmt.Fprintf(os.Stderr, "Could not send signature to server: %s\n", err)
+            errorLogger.Println("Could not send signature to server: %s", err)
             conn.Close()
             os.Exit(1)
         }
 
-        /* Sending the lenght of the payload, should move this to uint64 */
         err := binary.Write(conn, binary.LittleEndian, uint32(len(data)))
         if err != nil {
-            fmt.Fprintf(os.Stderr, "Could not send payload lenght to client: %s\n", err)
+            errorLogger.Println("Could not send payload lenght to client:", err)
             conn.Close()
             os.Exit(1)
         }
 
         _, err = conn.Write(checksum[:])
         if err != nil {
-            fmt.Fprintf(os.Stderr, "Error while sending checksum: %s\n", err)
+            errorLogger.Println("Error while sending checksum:", err)
             conn.Close()
             os.Exit(1)
         }
 
-        fmt.Fprintf(os.Stderr, "\rRun: %d", *runs - currRun + 1)
-        currRun -= 1
+        _, err = conn.Write(data)
+        if err != nil {
+            errorLogger.Println("Could not send payload to client", err)
+            conn.Close()
+            os.Exit(1)
+        }
+
+        *runs -= 1
+        infoLogger.Println("Remaining runs:", *runs)
     }
 }
 

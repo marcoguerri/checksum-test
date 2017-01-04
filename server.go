@@ -24,6 +24,7 @@ import (
     "log"
     "bytes"
     "io"
+    "io/ioutil"
     "crypto/md5"
     "encoding/binary"
 )
@@ -44,23 +45,28 @@ func InitLog(infoWriter io.Writer, errorWriter io.Writer) (*log.Logger, *log.Log
     return infoLogger, errorLogger
 }
 
-func handleConnection(conn net.Conn, errorLogger *log.Logger) {
+func handleConnection(conn net.Conn, errorLogger *log.Logger, infoLogger *log.Logger) {
 
     header := make([]byte, signaturelen)
     length := make([]byte, payloadlen)
     checksum := make([]byte, 16)
+    runs := 0
 
     for {
-        /* Reads the header and compares it to the signature */
-        header = make([]byte, signaturelen)
         _, err := io.ReadFull(conn, header)
         if err != nil {
+            if err == io.EOF {
+                infoLogger.Println("Connection closed by", 
+                                     conn.RemoteAddr(), "after", runs,"runs")
+                return
+            }
             errorLogger.Println("Error while reading signature", err)
             conn.Close()
             return
         }
 
         if(binary.LittleEndian.Uint32(header) != 0xFDFDFDFD) {
+            errorLogger.Println("Signature does not match")
             continue
         }
 
@@ -85,7 +91,8 @@ func handleConnection(conn net.Conn, errorLogger *log.Logger) {
         _, err = io.ReadFull(conn, payload)
         if err != nil {
             if err == io.EOF {
-                /* Connection was closed by remote host */
+                /* Zero bytes were read by the server */
+                errorLogger.Println("Could not read payload")
                 return
             } else {
                 errorLogger.Println("Error while reading payload", err)
@@ -95,9 +102,17 @@ func handleConnection(conn net.Conn, errorLogger *log.Logger) {
        }
 
        calculatedChecksum := md5.Sum(payload)
-       if(bytes.Equal(calculatedChecksum[:], checksum)) {
-           errorLogger.Println("Checksums do not match!")
+       if(!bytes.Equal(calculatedChecksum[:], checksum)) {
+           file, err := ioutil.TempFile("/tmp", "payload")
+           if(err != nil) {
+               errorLogger.Println("Error while creating temporary file:", err)
+               continue
+           }
+           file.Write(payload)
+           file.Close()
+           errorLogger.Println("Checksums do not match, payload dumped at", file.Name())
        }
+       runs += 1
     }
 }
 
@@ -114,7 +129,6 @@ func main () {
         errorLogger.Println(err)
         os.Exit(1)
     }
-
     /*
      * GO philosophy is to to provide blocking interfaces that are used
      * concurrently with goroutines and channels rather than polling with
@@ -122,7 +136,6 @@ func main () {
      * the I/O is relatively easy to write. Underneath, GO uses the async 
      * interfaces provided by the OS (epoll) to be notified for network events
      */
-
     for {
         conn ,err := listener.Accept()
         if err != nil {
@@ -130,7 +143,7 @@ func main () {
             continue
         }
 
-        infoLogger.Println("Accepted connection with ", conn.RemoteAddr())
-        go handleConnection(conn, errorLogger)
+        infoLogger.Println("Accepted connection with", conn.RemoteAddr())
+        go handleConnection(conn, errorLogger, infoLogger)
    }
 }
