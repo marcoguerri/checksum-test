@@ -4,8 +4,8 @@ in a TCP stream. When integrity mechanisms implemented at the different levels
 of the ISO/OSI stack fail (e.g. Ethernet CRC32, IP header checksum, TCP checksum, etc.),
 checksum-test performs checksum verification of the application level
 payload and dumps on the filesystem all the messages that fail the consistency 
-check. An example of a interesting use case is reported at
-http://marcoguerri.github.io/linux/hardware/kernel/2016/06/19/mp30-data-corruption-part1.html
+check. I used this tool when debugging an [interesting data corruption issue on an ARM64
+server platform](https://marcoguerri.github.io/2016/06/mp30-data-corruption-part1).
 
 ### Usage ###
 Testing the tool requires a way to allow corrupted traffic to reach userspace
